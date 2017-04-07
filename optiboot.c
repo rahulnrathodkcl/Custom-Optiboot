@@ -2,6 +2,7 @@
 //make atmega328 BIGBOOT SUPPORT_EEPROM BAUD_RATE=9600L LED_START_FLASHES=4 LED_DATA_FLASH OPTIBOOT_CUSTOMVER=1 AVR_FREQ=8000000L LED=C5 SOFT_UART
 //make atmega328 BIGBOOT SUPPORT_EEPROM BAUD_RATE=19200L LED_START_FLASHES=2 LED_DATA_FLASH OPTIBOOT_CUSTOMVER=1 AVR_FREQ=8000000L LED=C5 SOFT_UART
 //make atmega328 BIGBOOT SUPPORT_EEPROM BAUD_RATE=19200L LED_START_FLASHES=2 LED_DATA_FLASH OPTIBOOT_CUSTOMVER=1 AVR_FREQ=8000000L LED=C5
+//make atmega328 BAUD_RATE=19200L LED_START_FLASHES=2 LED_DATA_FLASH OPTIBOOT_CUSTOMVER=1 AVR_FREQ=8000000L LED=C5
 
 #define FUNC_READ 1
 #define FUNC_WRITE 1
@@ -369,7 +370,7 @@ uint32_t bRead;
 
 
 uint8_t buff[STR_PAGESIZE];
-uint8_t databuf[SPM_PAGESIZE];
+uint8_t databuf[144];
 
 static uint8_t HEX2DEC(uint8_t);
 static uint8_t getHexByte();
@@ -377,11 +378,11 @@ static inline uint8_t getDataLen(uint8_t ptr);
 static uint8_t checkRecord(uint8_t write);
 void discardUpdateRequest(uint8_t rvalue);
 static uint8_t DownloadHexFile(uint32_t, uint8_t);
-static inline void printDebug();
-static inline void printCheckSumError(void);
+// static inline void printDebug();
+// static inline void printCheckSumError(void);
 
 #if SPM_PAGESIZE > 255
-typedef uint16_t pagelen_t ;
+typedef uint16_t pagelen_t;
 // #define GETLENGTH(len) len = getch()<<8; len |= getch()
 #else
 typedef uint8_t pagelen_t;
@@ -552,26 +553,26 @@ int main(void) {
 
   /* Forever loop: exits by causing WDT reset */
     /* Write memory, length is big endian and is in bytes */
-  eadd=912;
-  if(eeprom_read_byte((uint8_t*)eadd)!=0x01)
-  {
-    if(DownloadHexFile(prgSize,0x00))
-    {
-      putch('V');
-      putch('D');
-      putch('\r');
-      putch('\n');
-      eeprom_write_byte((uint8_t*)eadd,0x01);
-    }
-    else        //remove update request and set the reason for same..
-      discardUpdateRequest(0x0A);       //cannot verify hex file
+  // eadd=912;
+  // if(eeprom_read_byte((uint8_t*)eadd)!=0x01)
+  // {
+  //   if(DownloadHexFile(prgSize,0x00))
+  //   {
+  //     putch('V');
+  //     putch('D');
+  //     putch('\r');
+  //     putch('\n');
+  //     eeprom_write_byte((uint8_t*)eadd,0x01);
+  //   }
+  //   else        //remove update request and set the reason for same..
+  //     discardUpdateRequest(0x0A);       //cannot verify hex file
 
-    watchdogConfig(WATCHDOG_250MS);
-    for(;;)
-    {}
-  }
-  else        //hex file is verified.....
-  {
+  //   watchdogConfig(WATCHDOG_250MS);
+  //   for(;;)
+  //   {}
+  // }
+  // else        //hex file is verified.....
+  // {
     if(DownloadHexFile(prgSize,0x01))
     {
       watchdogReset();
@@ -581,7 +582,7 @@ int main(void) {
       flash_led(10);
       appStart(ch);
     }
-  }
+  // }
     return 0;
 }
 
@@ -600,6 +601,7 @@ static uint8_t DownloadHexFile(uint32_t prgSize, uint8_t op)
 
       flash_led(6);
       address=calcAddress=0;
+      dataCnt=0;
       pagelen_t savelength;
       bRead=0;
     while(bRead<prgSize) {
@@ -626,7 +628,7 @@ static uint8_t DownloadHexFile(uint32_t prgSize, uint8_t op)
       {
           uint16_t eadd=908;
           eeprom_write_byte((uint8_t *)(eadd), 0x02);
-          printCheckSumError();
+          // printCheckSumError();
           // printDebug();
           return 0x00;
       }
@@ -641,20 +643,23 @@ static uint8_t DownloadHexFile(uint32_t prgSize, uint8_t op)
     return 0x01;
 }
 
-void printDebug()
-{
-      convertIntToChar(address);
-      putch('\n');
-      convertIntToChar(calcAddress);
-      putch('\n');
-}
+// void printDebug()
+// {
+//       convertIntToChar(dataCnt);
+//       putch('\n');
+//       convertIntToChar(address);
+//       putch('\n');
+//       convertIntToChar(calcAddress);
+//       putch('\n');
+// }
 
-void printCheckSumError()
-{
-  putch('C');
-  putch('K');
-  putch('E');
-}
+// void printCheckSumError()
+// {
+//   putch('C');
+//   putch('K');
+//   putch('E');
+// }
+
     // watchdogConfig(WATCHDOG_250MS);
         // while (1)           // and busy-loop so that WD causes
       // ;             //  a reset and app start.
@@ -703,8 +708,22 @@ static inline uint8_t getDataLen(uint8_t ptr)
 
 static void initWrite()
 {
-        writebuffer('F', databuf, address, dataCnt);
-        dataCnt=0;  
+  if(dataCnt>=SPM_PAGESIZE)
+  {
+        writebuffer('F', databuf, address, SPM_PAGESIZE);
+        //copy data from dataCnt index to 0 index in dataBuf
+        uint8_t temp=SPM_PAGESIZE;
+        while(temp!=dataCnt)
+          databuf[temp-SPM_PAGESIZE]=databuf[temp++];
+        dataCnt= dataCnt - SPM_PAGESIZE;
+        address= calcAddress - dataCnt;
+  }    
+  else
+  {
+      writebuffer('F', databuf, address, dataCnt);
+      dataCnt=0;
+      address=calcAddress;
+  }
 }
 
 static uint8_t checkRecord(uint8_t writeRecord)
@@ -728,32 +747,30 @@ static uint8_t checkRecord(uint8_t writeRecord)
   curAddress += addrl;
 
   uint8_t recType=getHexByte();
-  if(calcAddress!=curAddress && recType==0)
-  {
-    if(curAddress-address>=SPM_PAGESIZE)
-    {
-      if(dataCnt>0)
-        initWrite();
-      address=calcAddress=curAddress;
-    }
-    else
-    {
-      while(calcAddress!=curAddress)
-      {
-        databuf[dataCnt++]=0xFF;
-        calcAddress++;
-      }
-    }
-  }
+  // if(calcAddress!=curAddress && recType==0)
+  // {
+    // if(curAddress-address>=SPM_PAGESIZE)
+    // {
+      // if(dataCnt>0)
+        // initWrite();
+      // address=calcAddress=curAddress;
+    // }
+    // else
+    // {
+      // while(calcAddress!=curAddress)
+      // {
+        // databuf[dataCnt++]=0xFF;
+        // calcAddress++;
+      // }
+    // }
+  // }
   uint8_t checkSum=data_len + addrh + addrl + recType;
-  
-  while(len--)
-  {
-    databuf[dataCnt]=getHexByte();
-    checkSum+=databuf[dataCnt++];
-    calcAddress++;
-  }
-
+    while(len--)
+    {
+      databuf[dataCnt]=getHexByte();
+      checkSum+=databuf[dataCnt++];
+      calcAddress++;
+    }  
   checkSum=(~checkSum) + 1;
   uint8_t ck=getHexByte();
 
@@ -763,12 +780,13 @@ static uint8_t checkRecord(uint8_t writeRecord)
   if(writeRecord)
   {
       // printDebug();
-      if(dataCnt==SPM_PAGESIZE || (recType==1 && dataCnt>0))
+      if(dataCnt>=SPM_PAGESIZE || (recType==1 && dataCnt>0))
       {
         initWrite();
-        address=calcAddress;
+        // address=calcAddress;
       }
   }
+
   if(recType==1)
     return RSP_FINISHED;
   return RSP_OK;      //correct record and written
@@ -1087,9 +1105,9 @@ void requestPage(uint8_t plen,uint32_t pos)
     putch('\\');
     putch('m');
     putch('.');
-    putch('b');
-    putch('i');
-    putch('n');
+    putch('h');
+    putch('e');
+    putch('x');
     putch(',');
     putch('1');
     putch(',');
