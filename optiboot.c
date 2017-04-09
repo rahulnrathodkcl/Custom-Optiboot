@@ -351,42 +351,30 @@ optiboot_version = 256*(OPTIBOOT_MAJVER + OPTIBOOT_CUSTOMVER) + OPTIBOOT_MINVER;
  * some code space on parts with smaller pagesize by using a smaller int.
  */
 
-// #define O_VERIFY 0x00
-// #define O_WRITE 0x01
-
-#define STR_PAGESIZE 225
-
+// const uint16_t STR_PAGESIZE=720;
+#define STR_PAGESIZE 720L
 #define RSP_OK 0x00
 #define RSP_CHECKSUM_FAIL 0x01
 #define RSP_INSUFFICIENT 0x02
 #define RSP_FINISHED 0x03
 
-uint8_t dataCnt=0;
-uint8_t tempPtr;
-uint16_t length;
-uint16_t address;
-uint16_t calcAddress;
-uint32_t bRead;
-
-
-uint8_t buff[STR_PAGESIZE];
-uint8_t databuf[144];
-
-static uint8_t HEX2DEC(uint8_t);
-static uint8_t getHexByte();
-static inline uint8_t getDataLen(uint8_t ptr);
-static uint8_t checkRecord(uint8_t write);
-void discardUpdateRequest(uint8_t rvalue);
-static uint8_t DownloadHexFile(uint32_t, uint8_t);
-// static inline void printDebug();
-// static inline void printCheckSumError(void);
-
-#if SPM_PAGESIZE > 255
+#if STR_PAGESIZE > 255
 typedef uint16_t pagelen_t;
-// #define GETLENGTH(len) len = getch()<<8; len |= getch()
 #else
 typedef uint8_t pagelen_t;
 #endif
+// #define O_VERIFY 0x00
+// #define O_WRITE 0x01
+
+// static uint8_t getHexByte();
+// static uint8_t checkRecord(uint8_t write);
+// __attribute__((noinline)) uint8_t DownloadHexFile(uint32_t, uint8_t);
+ __attribute__((noinline)) static uint8_t HEX2DEC(uint8_t);
+static inline uint8_t getDataLen(uint8_t *ptr);
+void discardUpdateRequest(uint8_t rvalue);
+__attribute__((noinline)) static uint16_t initWrite(uint16_t addr,uint8_t **dataPtr);
+// static inline void printDebug();
+// static inline void printCheckSumError(void);
 
 
 /* Function Prototypes
@@ -407,18 +395,16 @@ static inline void getNch(uint8_t);
 static inline void flash_led(uint8_t);
 #endif
 
-
 static inline void watchdogReset();
 static inline void writebuffer(int8_t memtype, uint8_t *mybuff,
 			       uint16_t address, pagelen_t len);
 // static inline void read_mem(uint8_t memtype,
 			    // uint16_t address, pagelen_t len);
 
-
 // static inline uint8_t getLength();
 static inline void convertIntToChar(uint32_t d);
-static void requestPage(uint8_t,uint32_t);
-static void cleareeprom(uint16_t);
+static void requestPage(uint16_t,uint32_t);
+static void cleareeprom();
 // static inline void printEEPROMContents();
 
 #ifdef SOFT_UART
@@ -432,6 +418,7 @@ void appStart(uint8_t rstFlags) __attribute__ ((naked));
  */
 #if !defined(RAMSTART)  // newer versions of gcc avr-libc define RAMSTART
 #define RAMSTART 0x100
+#define DATASTART 0x3E8
 #if defined (__AVR_ATmega644P__)
 // correct for a bug in avr-libc
 // #undef SIGNATURE_2
@@ -445,28 +432,46 @@ void appStart(uint8_t rstFlags) __attribute__ ((naked));
 /* C zero initialises all global variables. However, that requires */
 /* These definitions are NOT zero initialised, but that doesn't matter */
 /* This allows us to drop the zero init code, saving us memory */
-// #define buff    ((uint8_t*)(RAMSTART))
+
+
+// uint8_t dataCnt=0;
+// uint8_t tempPtr;
+// uint16_t length;
+// uint16_t address;
+// uint16_t calcAddress;
+// uint32_t bRead;
+
+#define strbuff    ((uint8_t*)(RAMSTART))
+#define databuff    ((uint8_t*)(DATASTART))
+
+#define UPDREQADD   900
+#define PRGSIZEADD  904
+#define UPDSTATADD  908
+#define VERSTATADD  912
+#define TRYNUMADD   916
+#define EEPROMMAXADD 1023
+#define MEMTYPE 'F'
 
 #define appstart_vec (0)
 
-#define GETLENGTH(x) (((prgSize-bRead)/STR_PAGESIZE>0)?(STR_PAGESIZE):(prgSize-bRead))
+#define GETLENGTH(x) ((((prgSize-bRead)/STR_PAGESIZE)>0)?(STR_PAGESIZE):(prgSize-bRead))
+
+#define GETHEXBYTE() ((HEX2DEC(*strPtr++)<<4) + HEX2DEC(*strPtr++))
+#define GETDATALEN() (dataPtr-databuff)
+#define GETSTRREADLEN() (strPtr-strbuff)
+
 
 /* main program starts here */
 int main(void) {
 
   // register uint16_t address = 0;
-
   uint8_t ch;
-  uint16_t eadd;
-  uint32_t prgSize;
 
   watchdogConfig(WATCHDOG_8S);
-
   /*
    * Making these local and in registers prevents the need for initializing
    * them, and also saves space because code no longer stores to memory.
    */
-
   putch('\r'); 
   putch('\n');
 
@@ -479,6 +484,8 @@ int main(void) {
   //
   // If not, uncomment the following instructions:
   // cli();
+          // }
+  asm volatile ("cli");
   asm volatile ("clr __zero_reg__");
 #if defined(__AVR_ATmega8__) || defined (__AVR_ATmega32__) || defined (__AVR_ATmega16__)
   SP=RAMEND;  // This is done by hardware reset
@@ -492,18 +499,29 @@ int main(void) {
    */
   ch = MCUSR;
   MCUSR = 0;
-  eadd=900;
   //prg update request not set... do not enter into bootloader
-  if((eeprom_read_byte((uint8_t *)(eadd)))!=0x01)
+
+  if(eeprom_read_byte((uint8_t *)UPDREQADD)!=0x01)
   {
+    watchdogReset();
+    watchdogConfig(WATCHDOG_OFF);
     appStart(ch);
     // if (ch & (_BV(WDRF) | _BV(BORF) | _BV(PORF) | _BV(EXTRF)))
       // appStart(0);
   }
-  putch('\r'); 
-  putch('\n');
-  putch('\r');
-  putch('\n');
+  {   
+    uint8_t tryNum = eeprom_read_byte((uint8_t*)TRYNUMADD);
+    if(tryNum>5)
+    {
+        discardUpdateRequest(0x03);   //max attempts exceeded done for updating the firmware
+        watchdogConfig(WATCHDOG_250MS);
+        for(;;)
+        {}
+    }
+    else
+      eeprom_write_byte((uint8_t *)TRYNUMADD,++tryNum);
+  }
+
 
 #if LED_START_FLASHES > 0
   // Set up Timer 1 for timeout counter
@@ -524,17 +542,20 @@ int main(void) {
 #endif
 #endif
 
-
-  // Set up watchdog to trigger after 1s
+  // Set up watchdog to trigger after 8s
   watchdogConfig(WATCHDOG_8S);
 
 #if (LED_START_FLASHES > 0) || defined(LED_DATA_FLASH)
-  /* Set LED pin as output */
-  LED_DDR |= _BV(LED);
+  LED_DDR |= _BV(LED);     /* Set LED pin as output */
 #endif
   putch('\r'); 
   putch('\n');
-
+  putch('\r');
+  putch('\n');
+  putch('\r');
+  putch('\n');
+  // convertIntToChar(UPDREQADD);  
+  // convertIntToChar(eeprom_read_byte((uint8_t *)UPDREQADD));
 #ifdef SOFT_UART
   /* Set TX pin as output */
   UART_DDR |= _BV(UART_TX_BIT);
@@ -542,19 +563,16 @@ int main(void) {
 
 #if LED_START_FLASHES > 0
   /* Flash onboard LED to signal entering of bootloader */
-  // flash_led(LED_START_FLASHES * 2);
+  flash_led(LED_START_FLASHES * 2);
 #endif
-  eadd=904;
-  prgSize=eeprom_read_dword((uint32_t *)(eadd));
-  // prgSize =22876L;
-  // bRead=0;
+  uint32_t prgSize;
+  prgSize=eeprom_read_dword((uint32_t *)(904));
+  // convertIntToChar(prgSize);
+  putch('\r');
+  putch('\n');
 
   // uint8_t desttype;
-
-  /* Forever loop: exits by causing WDT reset */
-    /* Write memory, length is big endian and is in bytes */
-  // eadd=912;
-  // if(eeprom_read_byte((uint8_t*)eadd)!=0x01)
+  // if(eeprom_read_byte((uint8_t*)VERSTATADD)!=0x01)
   // {
   //   if(DownloadHexFile(prgSize,0x00))
   //   {
@@ -562,86 +580,180 @@ int main(void) {
   //     putch('D');
   //     putch('\r');
   //     putch('\n');
-  //     eeprom_write_byte((uint8_t*)eadd,0x01);
+  //     eeprom_write_byte((uint8_t*)VERSTATADD,0x01);
   //   }
   //   else        //remove update request and set the reason for same..
   //     discardUpdateRequest(0x0A);       //cannot verify hex file
 
-  //   watchdogConfig(WATCHDOG_250MS);
+  //   watchdogConfig(WATCHDOG_16MS);
   //   for(;;)
   //   {}
   // }
   // else        //hex file is verified.....
   // {
-    if(DownloadHexFile(prgSize,0x01))
+
+      // flash_led(6);
+      register uint16_t address=0;  
+      uint8_t* dataPtr=databuff;
+      uint8_t* strPtr=strbuff;
+      uint32_t bRead=0;
+      uint8_t writeRecord;
+      if(eeprom_read_byte((uint8_t*)VERSTATADD)==0x01)     //if not verified don't write, if verified write
+          writeRecord=0x01;     //verified, start writing
+      else
+          writeRecord=0x00;     //start verifying 
+    while(bRead<prgSize)
     {
       watchdogReset();
-      watchdogConfig(WATCHDOG_OFF);    // shorten WD timeout
-      cleareeprom(1023);   //clear contents of EEPROM
-      discardUpdateRequest(0x01);       //set successfully updated
-      flash_led(10);
-      appStart(ch);
+      pagelen_t savelength;
+      pagelen_t length;
+      savelength=GETLENGTH(savelength);
+      // convertIntToChar(savelength);
+      // putch('\r');
+      // putch('\n');
+      // convertIntToChar(STR_PAGESIZE);
+      // putch('\r');
+      // putch('\n');
+
+      requestPage(savelength,bRead);      
+      length=savelength;
+      getNch(2);
+
+      // length=savelength;
+      strPtr=strbuff;
+      do  *strPtr++=getch();
+      while(--savelength);
+      // while(length<savelength)
+        // buff[length++]=getch();
+      getNch(6);
+      strPtr=strbuff;
+
+      uint8_t resp=RSP_OK;
+      while(resp==RSP_OK)
+      {
+          if((length - GETSTRREADLEN())<((getDataLen(strPtr+1)*2)+11))  //invalid record not having necessary data
+          {
+            resp = RSP_INSUFFICIENT;
+            break;
+          }
+          strPtr++;    //discard ":" from record
+          uint8_t data_len=GETHEXBYTE();
+          // putch(':');
+          // convertIntToChar(data_len);
+          // putch(':');
+
+          //saving address of the record in memory is not needed,
+          //so, add address bytes directly in the checksum.
+          // uint8_t addrh = GETHEXBYTE();
+          // uint8_t addrl = GETHEXBYTE();
+          // convertIntToChar(addrh);
+          // putch(':');
+          // convertIntToChar(addrl);
+          // putch(':');
+
+          uint8_t checkSum=data_len + GETHEXBYTE() + GETHEXBYTE();
+          uint8_t recType=GETHEXBYTE();
+          // convertIntToChar(recType);
+          // putch(':');
+          checkSum+=recType;
+          
+          // uint8_t addrh = getHexByte();
+          // uint8_t addrl = getHexByte();
+          // uint16_t curAddress=addrh;
+          // curAddress = curAddress << 8;
+          // curAddress += addrl;          
+          if(!writeRecord)
+            dataPtr=databuff;
+          while(data_len>0)
+          {
+            *dataPtr=GETHEXBYTE();
+            // convertIntToChar(*dataPtr);
+            // putch(':');
+            checkSum+=*dataPtr++;
+            data_len--;
+            // databuf[dataCnt]=GETHEXBYTE();
+            // checkSum+=databuf[dataCnt++];
+            // calcAddress++;
+          }  
+
+          // convertIntToChar(checkSum);
+          // putch(':');
+          checkSum=(~checkSum) + 1;
+          // convertIntToChar(checkSum);
+          // putch(':');
+          uint8_t tck=GETHEXBYTE();
+          // convertIntToChar(tck);
+          // putch('\r');
+          // putch('\n');
+          if(tck!=checkSum)    //incorrect record
+          {
+            // putch('C');
+            // putch('K');
+            // putch('\r');
+            // putch('\n');
+            //clear the udpate request and set status to checkSUm error  
+            //reset using wdt
+            discardUpdateRequest(0x02);
+            watchdogConfig(WATCHDOG_250MS);
+            for(;;)
+            {}
+          }
+
+          if(writeRecord && ((GETDATALEN())>=SPM_PAGESIZE || (recType==1 && (GETDATALEN())>0)))
+            address=initWrite(address,&dataPtr);
+
+          strPtr+=2;
+
+          if(recType==1)            
+            resp=RSP_FINISHED;
+
+          resp=RSP_OK;      //correct record and written
+      }
+        bRead+=GETSTRREADLEN();
     }
-  // }
+    // } 
+    // return 0x01;
+     // putch('D');
+     // putch('\r');
+     // putch('\n');
+
+    if(writeRecord==0x01)
+    {
+      flash_led(10);
+      cleareeprom(1023);   //clear contents of EEPROM
+      discardUpdateRequest(0x01);       //set successfully updated      
+    }
+    else
+      eeprom_write_byte((uint8_t *)VERSTATADD,0x01);  //set file verified
+
+    //reset using watchdog..
+    watchdogReset();
+    watchdogConfig(WATCHDOG_16MS);
+    for(;;)
+    {}
+    
     return 0;
 }
 
 void discardUpdateRequest(uint8_t rvalue)
 {
-  uint16_t add;
-  add=908;
-  eeprom_write_byte((uint8_t*)add,rvalue);
-  add=900;
-  eeprom_write_byte((uint8_t*)add,0x00);
+  uint16_t eadd=908;
+  // putch('E');
+  // putch(':');
+  // convertIntToChar(rvalue);
+  // putch('\r');
+  // putch('\n');
+  // convertIntToChar(eadd);  
+  eeprom_write_byte((uint8_t*)eadd,rvalue);
+  eadd=900;
+  eeprom_write_byte((uint8_t*)eadd,0x00);
 }
 
-static uint8_t DownloadHexFile(uint32_t prgSize, uint8_t op)
-{
-      // uint8_t dataCnt;
-
-      flash_led(6);
-      address=calcAddress=0;
-      dataCnt=0;
-      pagelen_t savelength;
-      bRead=0;
-    while(bRead<prgSize) {
-
-      watchdogReset();
-      // PROGRAM PAGE - we support flash programming only, not EEPROM
-      savelength=GETLENGTH(savelength);
-      requestPage(savelength,bRead);
+// uint8_t DownloadHexFile(uint32_t prgSize, uint8_t op)
+// {
+//       // uint8_t dataCnt;
       
-      getNch(2);
-      length=0;
-      while(length<savelength)
-        buff[length++]=getch();
-      getNch(6);
-      
-      length=tempPtr=0;
-      uint8_t resp=RSP_INSUFFICIENT;
-      while((resp=checkRecord(op))==RSP_OK)
-      {
-            tempPtr+=2;
-            length+=2;
-      }
-      if(resp==RSP_CHECKSUM_FAIL)
-      {
-          uint16_t eadd=908;
-          eeprom_write_byte((uint8_t *)(eadd), 0x02);
-          // printCheckSumError();
-          // printDebug();
-          return 0x00;
-      }
-      else if(resp==RSP_FINISHED)
-            length+=2;
-
-        // printDebug();
-        bRead+=length;
-        // printDebug();
-
-    }
-    return 0x01;
-}
+// }
 
 // void printDebug()
 // {
@@ -686,111 +798,57 @@ static uint8_t DownloadHexFile(uint32_t prgSize, uint8_t op)
 // #define getHexByte(x) length+=2; x=((HEX2DEC(buff[tempPtr++])<<4) + HEX2DEC(buff[tempPtr++]))
 // #define HEX2DEC(x)  (((x < 'A') ? ((x) - 48) : ((x) - 55)))
 
-static uint8_t HEX2DEC(uint8_t x)
+static  uint8_t HEX2DEC(uint8_t x)
 {
   return (((x < 'A') ? ((x) - 48) : ((x) - 55)));
 }
 
-static uint8_t getHexByte()
+// static uint8_t getHexByte()
+// {
+  // length+=2;
+  // return ((HEX2DEC(buff[tempPtr++])<<4) + HEX2DEC(buff[tempPtr++]));
+// }
+
+static inline uint8_t getDataLen(uint8_t *ptr)   
 {
-  length+=2;
-  return ((HEX2DEC(buff[tempPtr++])<<4) + HEX2DEC(buff[tempPtr++]));
+  return ((HEX2DEC(*ptr++)<<4) + HEX2DEC(*ptr++));
+  // return ((HEX2DEC(buff[ptr++])<<4) + HEX2DEC(buff[ptr++]));
 }
 
-static inline uint8_t getDataLen(uint8_t ptr)   
+static uint16_t initWrite(uint16_t addr,uint8_t **dataPtr)
 {
-  //do not pass referenece or pointer to this funtion...  
-  return ((HEX2DEC(buff[ptr++])<<4) + HEX2DEC(buff[ptr++]));
-}
-
-// inline void printNewLine()
-// { putch('\n');}
-
-static void initWrite()
-{
-  if(dataCnt>=SPM_PAGESIZE)
+  if((*dataPtr-databuff)>=SPM_PAGESIZE)
   {
-        writebuffer('F', databuf, address, SPM_PAGESIZE);
-        //copy data from dataCnt index to 0 index in dataBuf
-        uint8_t temp=SPM_PAGESIZE;
-        while(temp!=dataCnt)
-          databuf[temp-SPM_PAGESIZE]=databuf[temp++];
-        dataCnt= dataCnt - SPM_PAGESIZE;
-        address= calcAddress - dataCnt;
+        writebuffer(MEMTYPE, databuff, addr, SPM_PAGESIZE);
+        //copy data from dataCnt index to 0 index in dataBuf      
+        uint8_t *temp;
+        temp=databuff+SPM_PAGESIZE;
+        while(temp<*dataPtr)
+            *(temp-SPM_PAGESIZE)=*temp++;
+
+        // uint8_t temp=SPM_PAGESIZE;
+        // while(temp<=*dataPtr)
+          // databuf[temp-SPM_PAGESIZE]=databuf[temp++];
+        *dataPtr = temp- SPM_PAGESIZE;
+        return addr + SPM_PAGESIZE;
+        // dataCnt= dataCnt - SPM_PAGESIZE;
+        // address= calcAddress - dataCnt;
   }    
   else
   {
-      writebuffer('F', databuf, address, dataCnt);
-      dataCnt=0;
-      address=calcAddress;
+      writebuffer(MEMTYPE, databuff, addr, (*dataPtr-databuff));
+      addr = addr + (*dataPtr - databuff);
+      *dataPtr=databuff;
+      return addr;
+      // dataCnt=0;
+      // address=calcAddress;
   }
 }
 
-static uint8_t checkRecord(uint8_t writeRecord)
-{
-  if((STR_PAGESIZE - length)<((getDataLen(tempPtr+1)*2)+11))  //invalid record not having necessary data
-    return RSP_INSUFFICIENT;
-
-  // putch(databuf[tempPtr]);
-  tempPtr++;    //discard ":" from record
-  length++;
-
-  uint8_t data_len=getHexByte();
-  uint8_t len=data_len;
-  // convertIntToChar(data_len);
-
-  uint8_t addrh = getHexByte();
-  uint8_t addrl = getHexByte();
-
-  uint16_t curAddress=addrh;
-  curAddress = curAddress << 8;
-  curAddress += addrl;
-
-  uint8_t recType=getHexByte();
-  // if(calcAddress!=curAddress && recType==0)
-  // {
-    // if(curAddress-address>=SPM_PAGESIZE)
-    // {
-      // if(dataCnt>0)
-        // initWrite();
-      // address=calcAddress=curAddress;
-    // }
-    // else
-    // {
-      // while(calcAddress!=curAddress)
-      // {
-        // databuf[dataCnt++]=0xFF;
-        // calcAddress++;
-      // }
-    // }
-  // }
-  uint8_t checkSum=data_len + addrh + addrl + recType;
-    while(len--)
-    {
-      databuf[dataCnt]=getHexByte();
-      checkSum+=databuf[dataCnt++];
-      calcAddress++;
-    }  
-  checkSum=(~checkSum) + 1;
-  uint8_t ck=getHexByte();
-
-  if(ck!=checkSum)
-    return RSP_CHECKSUM_FAIL;     //incorrect record
-
-  if(writeRecord)
-  {
-      // printDebug();
-      if(dataCnt>=SPM_PAGESIZE || (recType==1 && dataCnt>0))
-      {
-        initWrite();
-        // address=calcAddress;
-      }
-  }
-
-  if(recType==1)
-    return RSP_FINISHED;
-  return RSP_OK;      //correct record and written
-}
+// static uint8_t checkRecord(uint8_t writeRecord)
+// {
+// 
+// }
 
 void putch(char ch) {
 #ifndef SOFT_UART
@@ -1058,28 +1116,31 @@ static inline void writebuffer(int8_t memtype, uint8_t *mybuff,
 
 void convertIntToChar(uint32_t d)
 {
-
-  uint8_t t[6];
-  uint8_t temp=0;
+  uint8_t *strPtr=strbuff;
+  // uint8_t t[6];
+  // uint8_t temp=0;
+  // uint8_t *temp;
+  // temp=strbuff;
     if(d==0)
     {
       putch('0');
       return;
     }
 
-    // uint8_t *bufPtr = buff;
     while(d>0)
     {
-      // *bufPtr++=(d%10)+0x30;
-        t[temp++]=(d%10)+0x30;
+        // t[temp++]=(d%10)+0x30;
+       *strPtr++=(d%10)+0x30;
         d=d/10;
     }
-     while(temp--)
-        putch(t[temp]);
+     while(strPtr>strbuff)
+        putch(*--strPtr);
+     // while(temp--)
+     //    putch(t[temp]);
 }
 
 
-void requestPage(uint8_t plen,uint32_t pos)
+void requestPage(uint16_t plen,uint32_t pos)
 {
     putch('A');
     putch('T');
@@ -1118,14 +1179,14 @@ void requestPage(uint8_t plen,uint32_t pos)
     convertIntToChar(pos);
     putch('\r');
     putch('\n');
-    // issueRead("\r\n",2);
 }
 
-void cleareeprom(uint16_t len)
+void cleareeprom()
 {
-      while(len--) {
-      eeprom_write_byte((uint8_t *)(len), 0xFF);
-      }
+    uint16_t len=EEPROMMAXADD;
+    while(len--) {
+    eeprom_write_byte((uint8_t *)(len), 0xFF);
+    }
 }
 // static inline uint8_t getLength(prgSize)
 // {
