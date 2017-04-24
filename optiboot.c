@@ -451,6 +451,7 @@ void appStart(uint8_t rstFlags) __attribute__ ((naked));
 #define TRYNUMADD   916
 #define EEPROMMAXADD 1023
 #define MEMTYPE 'F'
+#define PIN_TURNOFF PD7
 
 #define appstart_vec (0)
 
@@ -509,6 +510,11 @@ int main(void) {
     // if (ch & (_BV(WDRF) | _BV(BORF) | _BV(PORF) | _BV(EXTRF)))
       // appStart(0);
   }
+  
+  DDRD |= _BV(PIN_TURNOFF);       // set Pin Turnoff in Port D to output
+  // PORTD &= ~(1 << n); // Pin n goes low
+  PORTD |= _BV(PIN_TURNOFF); // Pin n goes high
+
   {   
     uint8_t tryNum = eeprom_read_byte((uint8_t*)TRYNUMADD);
     if(tryNum>5)
@@ -554,6 +560,9 @@ int main(void) {
   putch('\n');
   putch('\r');
   putch('\n');
+
+
+  
   // convertIntToChar(UPDREQADD);  
   // convertIntToChar(eeprom_read_byte((uint8_t *)UPDREQADD));
 #ifdef SOFT_UART
