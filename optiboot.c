@@ -405,6 +405,7 @@ static inline void writebuffer(int8_t memtype, uint8_t *mybuff,
 static inline void convertIntToChar(uint32_t d);
 static void requestPage(uint16_t,uint32_t);
 static void cleareeprom();
+static void deleteHexFile();
 // static inline void printEEPROMContents();
 
 #ifdef SOFT_UART
@@ -452,6 +453,7 @@ void appStart(uint8_t rstFlags) __attribute__ ((naked));
 #define EEPROMMAXADD 1023
 #define MEMTYPE 'F'
 #define PIN_TURNOFF PD7
+// #define PIN_SIMSLEEP PD4
 
 #define appstart_vec (0)
 
@@ -464,10 +466,12 @@ void appStart(uint8_t rstFlags) __attribute__ ((naked));
 
 /* main program starts here */
 int main(void) {
-
   // register uint16_t address = 0;
-  uint8_t ch;
+  DDRD |= _BV(PIN_TURNOFF);       // set Pin Turnoff in Port D to output
+                                  // PORTD &= ~(1 << n); // Pin n goes low
+  PORTD |= _BV(PIN_TURNOFF);      // Pin n goes high
 
+  uint8_t ch;
   watchdogConfig(WATCHDOG_8S);
   /*
    * Making these local and in registers prevents the need for initializing
@@ -509,15 +513,11 @@ int main(void) {
     appStart(ch);
     // if (ch & (_BV(WDRF) | _BV(BORF) | _BV(PORF) | _BV(EXTRF)))
       // appStart(0);
-  }
-  
-  DDRD |= _BV(PIN_TURNOFF);       // set Pin Turnoff in Port D to output
-  // PORTD &= ~(1 << n); // Pin n goes low
-  PORTD |= _BV(PIN_TURNOFF); // Pin n goes high
+  }  
 
-  {   
+  {
     uint8_t tryNum = eeprom_read_byte((uint8_t*)TRYNUMADD);
-    if(tryNum>5)
+    if(tryNum>9)
     {
         discardUpdateRequest(0x03);   //max attempts exceeded done for updating the firmware
         watchdogConfig(WATCHDOG_250MS);
@@ -527,6 +527,9 @@ int main(void) {
     else
       eeprom_write_byte((uint8_t *)TRYNUMADD,++tryNum);
   }
+
+  // DDRD |= _BV(PIN_SIMSLEEP);       // set Pin Turnoff in Port D to output
+  // PORTD |= _BV(PIN_SIMSLEEP); // Pin n goes high
 
 
 #if LED_START_FLASHES > 0
@@ -574,6 +577,10 @@ int main(void) {
   /* Flash onboard LED to signal entering of bootloader */
   flash_led(LED_START_FLASHES * 2);
 #endif
+    // TCNT1 = -((F_CPU/10)/(1024));
+    // TIFR1 = _BV(TOV1);
+    // while(!(TIFR1 & _BV(TOV1)));
+
   uint32_t prgSize;
   prgSize=eeprom_read_dword((uint32_t *)(904));
   // convertIntToChar(prgSize);
@@ -602,15 +609,23 @@ int main(void) {
   // {
 
       // flash_led(6);
-      register uint16_t address=0;  
-      uint8_t* dataPtr=databuff;
-      uint8_t* strPtr=strbuff;
-      uint32_t bRead=0;
+      register uint16_t address;  
+      uint8_t* dataPtr;
+      uint8_t* strPtr;
+      uint32_t bRead;
       uint8_t writeRecord;
+      
+
       if(eeprom_read_byte((uint8_t*)VERSTATADD)==0x01)     //if not verified don't write, if verified write
           writeRecord=0x01;     //verified, start writing
       else
           writeRecord=0x00;     //start verifying 
+lbl1:    
+    address=0;
+    dataPtr=databuff;
+    strPtr=strbuff;
+    bRead=0;
+    
     while(bRead<prgSize)
     {
       watchdogReset();
@@ -728,12 +743,17 @@ int main(void) {
 
     if(writeRecord==0x01)
     {
+      deleteHexFile();
       flash_led(10);
-      cleareeprom(1023);   //clear contents of EEPROM
-      discardUpdateRequest(0x01);       //set successfully updated      
+      cleareeprom();   //clear contents of EEPROM
+      discardUpdateRequest(0x01);       //set successfully updated
     }
     else
+    {
       eeprom_write_byte((uint8_t *)VERSTATADD,0x01);  //set file verified
+      writeRecord=0x01;
+      goto lbl1;
+    }
 
     //reset using watchdog..
     watchdogReset();
@@ -1148,7 +1168,6 @@ void convertIntToChar(uint32_t d)
      //    putch(t[temp]);
 }
 
-
 void requestPage(uint16_t plen,uint32_t pos)
 {
     putch('A');
@@ -1190,10 +1209,43 @@ void requestPage(uint16_t plen,uint32_t pos)
     putch('\n');
 }
 
+void deleteHexFile()
+{
+    putch('A');
+    putch('T');
+    putch('+');
+    putch('F');
+    putch('S');
+    putch('D');
+    putch('E');
+    putch('L');
+    putch('=');
+    putch('C');
+    putch(':');
+    putch('\\');
+    putch('U');
+    putch('s');
+    putch('e');
+    putch('r');
+    putch('\\');
+    putch('F');
+    putch('T');
+    putch('P');
+    putch('\\');
+    putch('m');
+    putch('.');
+    putch('h');
+    putch('e');
+    putch('x');
+    putch('\r');
+    putch('\n');
+}
+
+
 void cleareeprom()
 {
     uint16_t len=EEPROMMAXADD;
-    while(len--) {
+    while(UPDREQADD<len--) {
     eeprom_write_byte((uint8_t *)(len), 0xFF);
     }
 }
